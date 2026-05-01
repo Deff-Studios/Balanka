@@ -1,6 +1,9 @@
 using System.Collections.Generic;
 using UnityEngine;
 using TMPro;
+#if UNITY_EDITOR
+using UnityEditor;
+#endif
 
 namespace Balanka
 {
@@ -15,6 +18,9 @@ namespace Balanka
         private const string BorderWoodResource = "Sprites/border_wood_sprite";
 
         private static readonly int[] DefaultBasicPointValues = { 5, 10, 15, 20, 15, 10, 5 };
+        private static readonly int[] RecommendedTopNailRowCounts = { 1, 3, 5, 7, 9, 11, 13 };
+        private static readonly int[] RecommendedMiddleNailRowCounts = { 12, 13 };
+        private static readonly int[] RecommendedBottomNailRowCounts = { 12, 13, 12, 13 };
 
         [Header("Board Shape")]
         public float Width = 6f;
@@ -53,8 +59,43 @@ namespace Balanka
         public Color ScoreLabelShadowColor = new(0.12f, 0.06f, 0.03f, 0.75f);
         public Color ScoreSlotInsetColor = new(0.18f, 0.08f, 0.03f, 0.13f);
 
+        [Header("Nail Obstacles")]
+        public bool GenerateNailObstacles = true;
+        public bool UseRecommendedNailLayout = true;
+        public int[] TopNailRowCounts = { 1, 3, 5, 7, 9, 11, 13 };
+        public int[] MiddleNailRowCounts = { 12, 13, 12, 13, 12, 13, 12, 13 };
+        public int[] BottomNailRowCounts = { 12, 13, 12, 13 };
+        public float TopNailsTopY = 4.77f;
+        public float TopNailsBottomY = 2.4f;
+        public float BottomNailsTopY = -3.28f;
+        public float BottomNailsBottomY = -4.05f;
+        public float NailHorizontalSpacing = 0.37f;
+        public float NailRadius = 0.075f;
+        public float NailHeadRadius = 0.13f;
+        public float NailRestitution = 0.72f;
+        public float NailFriction = 0.02f;
+        public Color NailShadowColor = new(0.10f, 0.06f, 0.03f, 0.45f);
+        public Color NailRimColor = new(0.50f, 0.47f, 0.42f, 1f);
+        public Color NailFaceColor = new(0.78f, 0.75f, 0.68f, 1f);
+        public Color NailHighlightColor = new(1.00f, 0.96f, 0.82f, 0.90f);
+
+#if UNITY_EDITOR
+        private bool _editorRebuildQueued;
+#endif
+
         private void OnEnable() => Rebuild();
-        private void OnValidate() => Rebuild();
+
+        private void OnValidate()
+        {
+#if UNITY_EDITOR
+            if (!Application.isPlaying)
+            {
+                QueueEditorRebuild();
+                return;
+            }
+#endif
+            Rebuild();
+        }
 
         public void Rebuild()
         {
@@ -72,6 +113,7 @@ namespace Balanka
             CreateRail(root, "Left launch lane rail", new[] { new Vector2(-LaneHalfWidth, BottomY), new Vector2(-LaneHalfWidth, LaneTopY) }, true);
             CreateRail(root, "Right launch lane rail", new[] { new Vector2(LaneHalfWidth, BottomY), new Vector2(LaneHalfWidth, LaneTopY) }, true);
             CreateRail(root, "Bottom visual rail", new[] { new Vector2(-Width * 0.5f, BottomY), new Vector2(Width * 0.5f, BottomY) }, true);
+            CreateNailObstacles(root);
             CreateBasicPointSlots();
             PositionSpawnPoint();
         }
@@ -100,12 +142,18 @@ namespace Balanka
             {
                 Transform child = transform.GetChild(i);
                 if (child.name == GeneratedRootName)
+                {
+                    ClearEditorSelectionIfInside(child);
                     DestroyGenerated(child);
+                }
             }
 
             Transform scoreZones = transform.Find(ScoreZonesParentName);
             if (scoreZones)
+            {
+                ClearEditorSelectionIfInside(scoreZones.Find(GeneratedScoreSlotsName));
                 DestroyGenerated(scoreZones.Find(GeneratedScoreSlotsName));
+            }
         }
 
         private void DisablePlaceholderBorders()
@@ -156,7 +204,7 @@ namespace Balanka
             line.material = CreateSpriteMaterial(BorderWoodSprite, RailColor, new Vector2(BorderTextureTiling, 1f), true);
             line.startColor = Color.white;
             line.endColor = Color.white;
-            line.sortingOrder = 3;
+            line.sortingOrder = 20;
 
             for (int i = 0; i < points.Count; i++)
                 line.SetPosition(i, points[i]);
@@ -307,6 +355,178 @@ namespace Balanka
             zone.ValueLabel = text;
         }
 
+        private void CreateNailObstacles(Transform parent)
+        {
+            if (!GenerateNailObstacles) return;
+
+            int[] topRows = UseRecommendedNailLayout ? RecommendedTopNailRowCounts : TopNailRowCounts;
+            int[] middleRows = UseRecommendedNailLayout ? RecommendedMiddleNailRowCounts : MiddleNailRowCounts;
+            float nailRadius = UseRecommendedNailLayout ? 0.05f : Mathf.Max(0.001f, NailRadius);
+            float nailHeadRadius = UseRecommendedNailLayout ? 0.05f : Mathf.Max(nailRadius, NailHeadRadius);
+            float spacing = Mathf.Max(nailHeadRadius * 2.1f, UseRecommendedNailLayout ? 0.37f : NailHorizontalSpacing);
+            float maxHalfWidth = Mathf.Max(nailHeadRadius, LaneHalfWidth - ColliderRadius - nailRadius * 0.6f);
+            float topY = UseRecommendedNailLayout ? 4.6f : TopNailsTopY;
+            float bottomY = UseRecommendedNailLayout ? -4.05f : BottomNailsBottomY;
+            int[] fieldRows = BuildContinuousNailRows(topRows, middleRows, topY, bottomY, spacing);
+            float fieldBottomY = topY - spacing * (fieldRows.Length - 1);
+
+            var root = new GameObject("Nail obstacles");
+            root.transform.SetParent(parent, false);
+
+            PhysicsMaterial2D nailMaterial = CreateNailPhysicsMaterial();
+            CreateNailCluster(root.transform, "Continuous", fieldRows, topY, fieldBottomY, spacing, maxHalfWidth, nailRadius, nailHeadRadius, nailMaterial);
+        }
+
+        private static int[] BuildContinuousNailRows(int[] topRows, int[] repeatingRows, float topY, float bottomY, float rowSpacing)
+        {
+            int topRowCount = topRows != null ? topRows.Length : 0;
+            int repeatingRowCount = repeatingRows != null ? repeatingRows.Length : 0;
+            int totalRows = Mathf.Max(topRowCount, Mathf.FloorToInt(Mathf.Abs(topY - bottomY) / Mathf.Max(0.01f, rowSpacing)) + 1);
+            var rows = new int[totalRows];
+
+            for (int i = 0; i < totalRows; i++)
+            {
+                if (i < topRowCount)
+                {
+                    rows[i] = Mathf.Max(1, topRows[i]);
+                    continue;
+                }
+
+                rows[i] = repeatingRowCount > 0
+                    ? Mathf.Max(1, repeatingRows[(i - topRowCount) % repeatingRowCount])
+                    : i % 2 == 0 ? 13 : 12;
+            }
+
+            return rows;
+        }
+
+        private void CreateNailCluster(
+            Transform parent,
+            string clusterName,
+            int[] rowCounts,
+            float topY,
+            float bottomY,
+            float spacing,
+            float maxHalfWidth,
+            float nailRadius,
+            float nailHeadRadius,
+            PhysicsMaterial2D material)
+        {
+            if (rowCounts == null || rowCounts.Length == 0) return;
+
+            var cluster = new GameObject($"{clusterName} nail cluster");
+            cluster.transform.SetParent(parent, false);
+
+            int rows = rowCounts.Length;
+            for (int row = 0; row < rows; row++)
+            {
+                int rowColumns = Mathf.Max(1, rowCounts[row]);
+                float y = rows == 1 ? Mathf.Lerp(bottomY, topY, 0.5f) : Mathf.Lerp(topY, bottomY, row / (float)(rows - 1));
+                float rowHalfWidth = GetNailRowHalfWidth(rowColumns, spacing, maxHalfWidth, nailRadius);
+                CreateNailRow(cluster.transform, row, rowColumns, y, rowHalfWidth, nailRadius, nailHeadRadius, material);
+            }
+        }
+
+        private static float GetNailRowHalfWidth(int rowColumns, float spacing, float maxHalfWidth, float nailRadius)
+        {
+            if (rowColumns >= 13)
+                return maxHalfWidth;
+
+            if (rowColumns == 12)
+                return Mathf.Max(0f, maxHalfWidth - spacing * 0.5f);
+
+            return Mathf.Min(((rowColumns - 1) * spacing) * 0.5f, maxHalfWidth);
+        }
+
+        private void CreateNailRow(
+            Transform parent,
+            int row,
+            int rowColumns,
+            float y,
+            float rowHalfWidth,
+            float nailRadius,
+            float nailHeadRadius,
+            PhysicsMaterial2D material)
+        {
+            for (int column = 0; column < rowColumns; column++)
+            {
+                float x = rowColumns == 1 ? 0f : Mathf.Lerp(-rowHalfWidth, rowHalfWidth, column / (float)(rowColumns - 1));
+                CreateNail(parent, row, column, new Vector2(x, y), nailRadius, nailHeadRadius, material);
+            }
+        }
+
+        private void CreateNail(Transform parent, int row, int column, Vector2 position, float colliderRadius, float headRadius, PhysicsMaterial2D material)
+        {
+            var nail = new GameObject($"Nail_{row + 1:00}_{column + 1:00}");
+            nail.transform.SetParent(parent, false);
+            nail.transform.localPosition = new Vector3(position.x, position.y, -0.04f);
+
+            var collider = nail.AddComponent<CircleCollider2D>();
+            collider.radius = colliderRadius;
+            collider.sharedMaterial = material;
+
+            CreateDisc(nail.transform, "Shadow", headRadius * 1.08f, NailShadowColor, new Vector3(headRadius * 0.42f, -headRadius * 0.42f, 0.03f), 0);
+            CreateDisc(nail.transform, "Rim", headRadius, NailRimColor, Vector3.zero, 1);
+            CreateDisc(nail.transform, "Face", headRadius * 0.76f, NailFaceColor, new Vector3(-0.006f, 0.006f, -0.01f), 2);
+            CreateDisc(nail.transform, "Highlight", headRadius * 0.28f, NailHighlightColor, new Vector3(-headRadius * 0.24f, headRadius * 0.28f, -0.02f), 3);
+        }
+
+        private PhysicsMaterial2D CreateNailPhysicsMaterial()
+        {
+            return new PhysicsMaterial2D("Nail obstacle material")
+            {
+                friction = Mathf.Max(0f, NailFriction),
+                bounciness = Mathf.Clamp01(NailRestitution)
+            };
+        }
+
+        private void CreateDisc(Transform parent, string name, float radius, Color color, Vector3 localOffset, int sortingOrder)
+        {
+            var disc = new GameObject(name);
+            disc.transform.SetParent(parent, false);
+            disc.transform.localPosition = localOffset;
+
+            var meshFilter = disc.AddComponent<MeshFilter>();
+            meshFilter.sharedMesh = CreateDiscMesh(radius, 18);
+
+            var renderer = disc.AddComponent<MeshRenderer>();
+            renderer.sharedMaterial = CreateColorMaterial(color);
+            renderer.sortingOrder = sortingOrder;
+        }
+
+        private static Material CreateColorMaterial(Color color)
+        {
+            var material = new Material(Shader.Find("Sprites/Default"));
+            material.color = color;
+            return material;
+        }
+
+        private static Mesh CreateDiscMesh(float radius, int segments)
+        {
+            segments = Mathf.Max(8, segments);
+            var vertices = new Vector3[segments + 1];
+            var triangles = new int[segments * 3];
+
+            vertices[0] = Vector3.zero;
+
+            for (int i = 0; i < segments; i++)
+            {
+                float angle = (i / (float)segments) * Mathf.PI * 2f;
+                vertices[i + 1] = new Vector3(Mathf.Cos(angle) * radius, Mathf.Sin(angle) * radius, 0f);
+
+                int triangleIndex = i * 3;
+                triangles[triangleIndex] = 0;
+                triangles[triangleIndex + 1] = i + 1;
+                triangles[triangleIndex + 2] = i == segments - 1 ? 1 : i + 2;
+            }
+
+            var mesh = new Mesh { name = "Disc Mesh" };
+            mesh.vertices = vertices;
+            mesh.triangles = triangles;
+            mesh.RecalculateBounds();
+            return mesh;
+        }
+
         private static TextMeshPro CreateScoreLabelLayer(Transform parent, string name, string value, float fontSize, Vector2 size, Color color, Vector3 offset, int sortingOrder)
         {
             var layer = new GameObject(name);
@@ -343,6 +563,37 @@ namespace Balanka
                 Destroy(existing.gameObject);
             else
                 DestroyImmediate(existing.gameObject);
+        }
+
+        private void QueueEditorRebuild()
+        {
+#if UNITY_EDITOR
+            if (_editorRebuildQueued) return;
+
+            _editorRebuildQueued = true;
+            EditorApplication.delayCall += () =>
+            {
+                _editorRebuildQueued = false;
+                if (!this || !isActiveAndEnabled || Application.isPlaying) return;
+                Rebuild();
+            };
+#endif
+        }
+
+        private static void ClearEditorSelectionIfInside(Transform root)
+        {
+#if UNITY_EDITOR
+            if (!root) return;
+
+            foreach (Object selected in Selection.objects)
+            {
+                if (selected is GameObject gameObject && gameObject.transform.IsChildOf(root))
+                {
+                    Selection.activeObject = root.parent ? root.parent.gameObject : null;
+                    return;
+                }
+            }
+#endif
         }
 
         private void PositionSpawnPoint()

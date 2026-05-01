@@ -14,9 +14,9 @@ namespace Balanka
     {
         // ── Inspector ─────────────────────────────────────────────────────
         [Header("Stop Detection")]
-        public float StopVelocityThreshold = 0.3f;
-        public float StopConfirmDelay      = 0.2f;   // seconds below threshold before "stopped"
-        public float MaxLifetime           = 12f;    // safety net
+        public float StopVelocityThreshold = 0.12f;
+        public float StopConfirmDelay      = 0.8f;   // seconds below threshold before "stopped"
+        public float MaxLifetime           = 22f;    // safety net
 
         [Header("Board Tilt")]
         public float BoardTiltDegrees       = 35f;
